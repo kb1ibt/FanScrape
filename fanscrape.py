@@ -4,28 +4,30 @@ Above tools download posts from OnlyFans/Fansly and save metadata to 'user_data.
 
 This script requires python3, stashapp-tools, and sqlite3.
 """
+
 import json
-import sys
+import random
 import re
 import sqlite3
-from pathlib import Path, PurePath
-from html import unescape
+import sys
 import time
-import random
 import uuid
-from typing import Dict
 from datetime import datetime
-from pytz import timezone
+from html import unescape
+from pathlib import Path
+from typing import Dict
+
+# from pytz import timezone
 
 try:
     from stashapi import log
-    from stashapi.tools import file_to_base64
     from stashapi.stashapp import StashInterface
+    from stashapi.tools import file_to_base64
 except ModuleNotFoundError:
     print(
         "You need to install the stashapp-tools (stashapi) python module. (cmd): "
         "pip install stashapp-tools",
-        file=sys.stderr
+        file=sys.stderr,
     )
     sys.exit()
 
@@ -37,7 +39,7 @@ default_config = {
         "scheme": "http",
         "host": "localhost",
         "port": 9999,
-        "apikey": ""
+        "apikey": "",
     },
     "max_title_length": 64,  # Maximum length for scene/gallery titles.
     "tag_messages": True,  # Whether to tag messages.
@@ -45,12 +47,13 @@ default_config = {
     "max_performer_images": 3,  # Maximum performer images to generate.
     "cache_time": 300,  # Image expiration time (in seconds).
     "cache_dir": "cache",  # Directory to store cached base64 encoded images.
-    "cache_file": "cache.json"  # File to store cache information in.
+    "cache_file": "cache.json",  # File to store cache information in.
+    "meta_base_path": None,  # Base path to search for 'user_data.db' files.
 }
 
 # Read config file
 try:
-    with open('config.json', 'r', encoding="utf-8") as config_file:
+    with open("config.json", "r", encoding="utf-8") as config_file:
         config = json.load(config_file)
 except FileNotFoundError:
     # If the file doesn't exist, use the default configuration
@@ -60,17 +63,19 @@ except FileNotFoundError:
 config.update((k, v) for k, v in default_config.items() if k not in config)
 
 # Write config file
-with open('config.json', 'w', encoding="utf-8") as config_file:
+with open("config.json", "w", encoding="utf-8") as config_file:
     json.dump(config, config_file, indent=2)
 
-STASH_CONNECTION = config['stash_connection']
-MAX_TITLE_LENGTH = config['max_title_length']
-TAG_MESSAGES = config['tag_messages']
-TAG_MESSAGES_NAME = config['tag_messages_name']
-MAX_PERFORMER_IMAGES = config['max_performer_images']
-CACHE_TIME = config['cache_time']
-CACHE_DIR = config['cache_dir']
-CACHE_FILE = config['cache_file']
+STASH_CONNECTION = config["stash_connection"]
+MAX_TITLE_LENGTH = config["max_title_length"]
+TAG_MESSAGES = config["tag_messages"]
+TAG_MESSAGES_NAME = config["tag_messages_name"]
+MAX_PERFORMER_IMAGES = config["max_performer_images"]
+META_BASE_PATH = config["meta_base_path"]
+CACHE_TIME = config["cache_time"]
+CACHE_DIR = config["cache_dir"]
+CACHE_FILE = config["cache_file"]
+
 
 def convert_datetime(val):
     """Convert ISO 8601 datetime to datetime.datetime object."""
@@ -82,7 +87,7 @@ try:
     stash = StashInterface(STASH_CONNECTION)
 except SystemExit:
     log.error("Unable to connect to Stash, please verify your config.")
-    print('null')
+    print("null")
     sys.exit()
 
 # CACHE  ###########################################################################################
@@ -95,7 +100,7 @@ def load_cache():
     Load and update cache data, removing stale entries and associated files when necessary.
     """
     try:
-        with open(CACHE_FILE, 'r', encoding="utf-8") as file:
+        with open(CACHE_FILE, "r", encoding="utf-8") as file:
             cache = json.load(file)
             current_time = time.time()
             updated_cache = {}
@@ -103,10 +108,12 @@ def load_cache():
                 if current_time - timestamp <= CACHE_TIME:
                     updated_cache[path] = (timestamp, image_filenames)
                 else:
-                    log.info(f'[CACHE PURGE] Purging stale image(s) for path: {path}')
+                    log.info(f"[CACHE PURGE] Purging stale image(s) for path: {path}")
                     for image_filename in image_filenames:
                         image_path = Path(CACHE_DIR) / image_filename
-                        log.debug(f'[CACHE PURGE] Deleting stale image from disk: {image_path}')
+                        log.debug(
+                            f"[CACHE PURGE] Deleting stale image from disk: {image_path}"
+                        )
                         if Path(image_path).exists() and Path(image_path).is_file():
                             Path(image_path).unlink()
             return updated_cache
@@ -118,9 +125,9 @@ def save_cache(cache):
     """
     Save cache data and log update.
     """
-    with open(CACHE_FILE, 'w', encoding="utf-8") as file:
+    with open(CACHE_FILE, "w", encoding="utf-8") as file:
         json.dump(cache, file, indent=2)
-        log.info('[CACHE UPDATED]')
+        log.info("[CACHE UPDATED]")
 
 
 # SCENES ###########################################################################################
@@ -136,7 +143,8 @@ def lookup_scene(file, db, media_dir, username, network):
     )
     c = conn.cursor()
 
-    c.execute("""
+    c.execute(
+        """
         SELECT medias.filename, medias.post_id, match.api_type
         FROM medias
         JOIN (
@@ -147,13 +155,15 @@ def lookup_scene(file, db, media_dir, username, network):
         ON medias.post_id = match.post_id
         WHERE medias.media_type = 'Videos'
         ORDER BY medias.id ASC
-    """, (file.name,))
+    """,
+        (file.name,),
+    )
 
     result = c.fetchall()
 
     if not result:
-        log.error(f'Could not find metadata for scene: {file}')
-        print('null')
+        log.error(f"Could not find metadata for scene: {file}")
+        print("null")
         sys.exit()
 
     api_type = result[0][2]
@@ -171,23 +181,28 @@ def lookup_scene(file, db, media_dir, username, network):
         c.execute(query, (file.name,))
     else:
         log.error(f"Unknown api_type {api_type} for post: {post_id}")
-        print('null')
+        print("null")
         sys.exit()
 
-    log.debug(f'Found {len(result)} video(s) in post {post_id}')
+    log.debug(f"Found {len(result)} video(s) in post {post_id}")
     if len(result) > 1:
         scene_index = [item[0] for item in result].index(file.name) + 1
         scene_count = len(result)
-        log.debug(f'Video is {scene_index} of {len(result)} in post')
+        log.debug(f"Video is {scene_index} of {len(result)} in post")
     else:
         scene_index = 0
         scene_count = 0
 
-    scene = process_row(c.fetchone(), username, network, file.name, scene_index, scene_count)
-    #log.debug(f'Date is: {scene["date"]}')
+    scene = process_row(
+        c.fetchone(), username, network, file.name, scene_index, scene_count
+    )
+    # log.debug(f'Date is: {scene["date"]}')
     scrape = {
-        "title": scene["title"], "details": scene["details"], "date": scene["date"],
-        "code": scene["code"], "urls": scene["urls"],
+        "title": scene["title"],
+        "details": scene["details"],
+        "date": scene["date"],
+        "code": scene["code"],
+        "urls": scene["urls"],
         "studio": get_studio_info(username, network),
     }
     scrape["Performers"] = []
@@ -196,14 +211,14 @@ def lookup_scene(file, db, media_dir, username, network):
     usernames.append(username)
     log.debug(f"{usernames=}")
     for name in list(set(usernames)):
-        name = name.strip('.') # remove trailing full stop
-        scrape['Performers'].append({'Name': getnamefromalias(name)})
+        name = name.strip(".")  # remove trailing full stop
+        scrape["Performers"].append({"Name": getnamefromalias(name)})
 
     if api_type == "Messages" and TAG_MESSAGES:
         scrape["tags"] = [{"name": TAG_MESSAGES_NAME}]
 
     return scrape
-    
+
 
 # GALLERIES ########################################################################################
 def lookup_gallery(file, db, media_dir, username, network):
@@ -219,16 +234,19 @@ def lookup_gallery(file, db, media_dir, username, network):
     c = conn.cursor()
     # which media type should we look up for our file?
     log.info(str(file.resolve()))
-    c.execute("""
+    c.execute(
+        """
         SELECT DISTINCT api_type, post_id
         FROM medias
         WHERE medias.directory = ?
         COLLATE NOCASE
-    """, (str(file.resolve()),))
+    """,
+        (str(file.resolve()),),
+    )
     row = c.fetchone()
     if not row:
-        log.error(f'Could not find metadata for gallery: {file}')
-        print('null')
+        log.error(f"Could not find metadata for gallery: {file}")
+        print("null")
         sys.exit()
     # check for each api_type the right tables
     api_type = str(row[0])
@@ -243,13 +261,15 @@ def lookup_gallery(file, db, media_dir, username, network):
         c.execute(query, (post_id,))
     else:
         log.error(f"Unknown api_type {api_type} for post: {post_id}")
-        print('null')
+        print("null")
         sys.exit()
 
     gallery = process_row(c.fetchone(), username, network)
 
     scrape = {
-        "title": gallery["title"], "details": gallery["details"], "date": gallery["date"],
+        "title": gallery["title"],
+        "details": gallery["details"],
+        "date": gallery["date"],
         "urls": gallery["urls"],
         "studio": get_studio_info(username, network),
     }
@@ -258,8 +278,8 @@ def lookup_gallery(file, db, media_dir, username, network):
     usernames = searchPerformers(scrape)
     log.debug(f"{usernames=}")
     for name in list(set(usernames)):
-        name = name.strip('.') # remove trailing full stop
-        scrape['Performers'].append({'Name': getnamefromalias(name)})
+        name = name.strip(".")  # remove trailing full stop
+        scrape["Performers"].append({"Name": getnamefromalias(name)})
 
     if api_type == "Messages" and TAG_MESSAGES:
         scrape["tags"] = [{"name": TAG_MESSAGES_NAME}]
@@ -277,16 +297,21 @@ def get_scene_path(scene_id):
     if scene:
         return scene["files"][0]["path"]
 
-    log.error(f'Path for scene {scene_id} could not be found')
-    print('null')
+    log.error(f"Path for scene {scene_id} could not be found")
+    print("null")
     sys.exit()
+
 
 # alias search
 def getnamefromalias(alias):
-    perfs = stash.find_performers( f={"aliases":{"value": alias, "modifier":"EQUALS"}}, filter={"page":1, "per_page": 5}, fragment= "name" )
+    perfs = stash.find_performers(
+        f={"aliases": {"value": alias, "modifier": "EQUALS"}},
+        filter={"page": 1, "per_page": 5},
+        fragment="name",
+    )
     log.debug(perfs)
     if len(perfs):
-        return perfs[0]['name']
+        return perfs[0]["name"]
     return alias
 
 
@@ -299,8 +324,8 @@ def get_gallery_path(gallery_id):
     if gallery:
         return gallery["folder"]["path"]
 
-    log.error(f'Path for gallery {gallery_id} could not be found')
-    print('null')
+    log.error(f"Path for gallery {gallery_id} could not be found")
+    print("null")
     sys.exit()
 
 
@@ -309,12 +334,12 @@ def get_performer_info(username, media_dir):
     Resolve performer based on username
     """
     req = stash.find_performer(username)
-    log.debug(f'found performer(s): {req}')
+    log.debug(f"found performer(s): {req}")
     res: Dict = {}
     if req:
         log.debug(f"Found performer id: {req['id']}")
-        res['stored_id'] = req['id']
-    res['name'] = username
+        res["stored_id"] = req["id"]
+    res["name"] = username
 
     images = get_performer_images(media_dir)
     if images is not None:
@@ -322,16 +347,17 @@ def get_performer_info(username, media_dir):
 
     return [res]
 
+
 def searchPerformers(scene):
     pattern = re.compile(r"(?:^|\s)@([\w\-\.]+)")
-    content = unescape(scene['details'])
+    content = unescape(scene["details"])
     # if title is truncated, remove trailing dots and skip searching title
-    if scene['title'].endswith('..') and scene['title'].removesuffix('..') in content:
+    if scene["title"].endswith("..") and scene["title"].removesuffix("..") in content:
         searchtext = content
     else:
         # if title is unique, search title and content
-        searchtext = scene['title'] + " " + content
-    usernames = re.findall(pattern,unescape(searchtext))
+        searchtext = scene["title"] + " " + content
+    usernames = re.findall(pattern, unescape(searchtext))
     return usernames
 
 
@@ -341,27 +367,33 @@ def get_studio_info(studio_name, studio_network):
     """
     req = stash.find_studios(
         f={
-            "name": {"value": f"{studio_name} ({studio_network})", "modifier": "EQUALS"},
-            "OR":{
-                "aliases": {"value": f"{studio_name} ({studio_network})", "modifier": "EQUALS"}
-            }
+            "name": {
+                "value": f"{studio_name} ({studio_network})",
+                "modifier": "EQUALS",
+            },
+            "OR": {
+                "aliases": {
+                    "value": f"{studio_name} ({studio_network})",
+                    "modifier": "EQUALS",
+                }
+            },
         },
         filter={"page": 1, "per_page": 5},
-        fragment="id, name, aliases"
+        fragment="id, name, aliases",
     )
-    log.debug(f'found studio(s): {req}')
-    res: Dict = {'parent': {}}
+    log.debug(f"found studio(s): {req}")
+    res: Dict = {"parent": {}}
     if len(req) == 1:
         log.debug(f"Found studio id: {req[0]['id']}")
-        res['stored_id'] = req[0]['id']
-    res['name'] = f'{studio_name} ({studio_network})'
-    res['parent']['name'] = f'{studio_network} (network)'
-    if studio_network == 'OnlyFans':
-        res['url'] = f'https://onlyfans.com/{studio_name}'
-        res['parent']['url'] = 'https://onlyfans.com/'
-    elif studio_network == 'Fansly':
-        res['url'] = f'https://fansly.com/{studio_name}'
-        res['parent']['url'] = 'https://fansly.com/'
+        res["stored_id"] = req[0]["id"]
+    res["name"] = f"{studio_name} ({studio_network})"
+    res["parent"]["name"] = f"{studio_network} (network)"
+    if studio_network == "OnlyFans":
+        res["url"] = f"https://onlyfans.com/{studio_name}"
+        res["parent"]["url"] = "https://onlyfans.com/"
+    elif studio_network == "Fansly":
+        res["url"] = f"https://fansly.com/{studio_name}"
+        res["parent"]["url"] = "https://fansly.com/"
     return res
 
 
@@ -369,17 +401,17 @@ def get_performer_images(path):
     """
     Find and encode performer images to base64.
     """
-    log.debug(f'Finding image(s) for path: {path}')
+    log.debug(f"Finding image(s) for path: {path}")
 
     cache = load_cache()
 
     if str(path) in cache:  # check if the images are cached
-        log.debug(f'[CACHE HIT] Using cached image(s) for path: {path}')
-        image_filenames = cache[f'{path}'][1]
+        log.debug(f"[CACHE HIT] Using cached image(s) for path: {path}")
+        image_filenames = cache[f"{path}"][1]
         log.debug(image_filenames)
         cached_images = []
         for image_filename in image_filenames:
-            with open(Path(CACHE_DIR) / image_filename, 'r', encoding="utf-8") as f:
+            with open(Path(CACHE_DIR) / image_filename, "r", encoding="utf-8") as f:
                 base64_data = f.read()
                 cached_images.append(base64_data)
         return cached_images
@@ -391,38 +423,42 @@ def get_performer_images(path):
         image_list += type_result
 
     if len(image_list) == 0:  # if no images found
-        log.warning(f'No image(s) found for path: {path}')
+        log.warning(f"No image(s) found for path: {path}")
 
         return None
 
     # if images found, encode up to `max_images` to base64
-    log.debug(f'[CACHE MISS] Generating image(s) for path: {path}')
-    selected_images = random.choices(image_list, k=min(MAX_PERFORMER_IMAGES, len(image_list)))
+    log.debug(f"[CACHE MISS] Generating image(s) for path: {path}")
+    selected_images = random.choices(
+        image_list, k=min(MAX_PERFORMER_IMAGES, len(image_list))
+    )
 
     encoded_images = []
     cache_filenames = []
 
     for index, image in enumerate(selected_images):
-        log.debug(f"""
+        log.debug(
+            f"""
             [CACHE MISS] Encoding {index + 1} of {len(selected_images)} image(s) to base64: {image}'
-        """)
+        """
+        )
         base64_data = file_to_base64(image)
         if base64_data is None:
             log.error(f"Error converting image to base64: {image}")
-            print('null')
+            print("null")
             sys.exit()
 
         encoded_images.append(base64_data)
 
         # Store the base64 image data on disk
-        image_filename = f'{uuid.uuid4().hex}.b64'
-        with open(Path(CACHE_DIR) / image_filename, 'w', encoding="utf-8") as f:
+        image_filename = f"{uuid.uuid4().hex}.b64"
+        with open(Path(CACHE_DIR) / image_filename, "w", encoding="utf-8") as f:
             f.write(base64_data)
 
         cache_filenames.append(image_filename)
 
     # Store the file name and timestamp in the cache
-    cache[f'{path}'] = (time.time(), cache_filenames)
+    cache[f"{path}"] = (time.time(), cache_filenames)
     save_cache(cache)
     return encoded_images
 
@@ -449,14 +485,16 @@ def format_title(title, username, date, scene_index, scene_count):
     Format a post title based on various conditions.
     """
     if len(title) == 0:
-        scene_info = f' ({scene_index})' if scene_index > 0 else ''
-        return f'{username} - {date}{scene_info}'
+        scene_info = f" ({scene_index})" if scene_index > 0 else ""
+        return f"{username} - {date}{scene_info}"
 
-    f_title = truncate_title(title.split("\n")[0].strip().replace("<br />", ""), MAX_TITLE_LENGTH)
-    scene_info = f' ({scene_index})' if scene_index > 0 else ''
+    f_title = truncate_title(
+        title.split("\n")[0].strip().replace("<br />", ""), MAX_TITLE_LENGTH
+    )
+    scene_info = f" ({scene_index})" if scene_index > 0 else ""
 
     if len(f_title) <= 5:
-        return f'{f_title} - {date}{scene_info}'
+        return f"{f_title} - {date}{scene_info}"
 
     if not bool(re.search("[A-Za-z0-9]", f_title)):
         if scene_index == 0:
@@ -464,11 +502,11 @@ def format_title(title, username, date, scene_index, scene_count):
         else:
             title_max_len = MAX_TITLE_LENGTH - 16 - len(str(scene_index))
         t_title = truncate_title(f_title, title_max_len)
-        scene_info = f' ({scene_index})' if scene_index > 0 else ''
-        return f'{t_title} - {date}{scene_info}'
+        scene_info = f" ({scene_index})" if scene_index > 0 else ""
+        return f"{t_title} - {date}{scene_info}"
 
-    scene_info = f' {scene_index}/{scene_count}' if scene_index > 0 else ''
-    return f'{f_title}{scene_info}'
+    scene_info = f" {scene_index}/{scene_count}" if scene_index > 0 else ""
+    return f"{f_title}{scene_info}"
 
 
 def process_row(row, username, network, filename, scene_index=0, scene_count=0):
@@ -479,20 +517,15 @@ def process_row(row, username, network, filename, scene_index=0, scene_count=0):
     if validate_datetime(date):
         date = datetime.fromisoformat(date)
 
-    #localtimezone = timezone('America/New_York')
-    #utctz = timezone('UTC')
-    #date = localtimezone.localize(date).astimezone(utctz)
-    #log.debug(f'Date timezone is: {date.tzinfo}')
-    #log.debug(f'Date is: {date}')
     res = {}
-    res['date'] = date.strftime("%Y-%m-%d")
-    res['title'] = format_title(row[1], username, res['date'], scene_index, scene_count)
-    res['details'] = sanitize_string(row[1])
-    res['code'] = filename
-    if network == 'OnlyFans':
-        res['urls'] = [f"https://onlyfans.com/{str(row[0])}/{username}"]
-    elif network == 'Fansly':
-        res['urls'] = [f"https://fansly.com/post/{str(row[0])}"]
+    res["date"] = date.strftime("%Y-%m-%d")
+    res["title"] = format_title(row[1], username, res["date"], scene_index, scene_count)
+    res["details"] = sanitize_string(row[1])
+    res["code"] = filename
+    if network == "OnlyFans":
+        res["urls"] = [f"https://onlyfans.com/{str(row[0])}/{username}"]
+    elif network == "Fansly":
+        res["urls"] = [f"https://fansly.com/post/{str(row[0])}"]
     return res
 
 
@@ -517,16 +550,16 @@ def get_path_info(path):
     """
     Extract the username and network from a given path
     """
-    network = 'Fansly' if 'Fansly' in str(path) else 'OnlyFans'
+    network = "Fansly" if "Fansly" in str(path) else "OnlyFans"
     try:
         path_parts = [item.lower() for item in path.parts]
         index = path_parts.index(network.lower())
         if index + 1 < len(path.parts):
-            return  path.parts[index + 1], network, Path(*path.parts[:index + 2])
+            return path.parts[index + 1], network, Path(*path.parts[: index + 2])
         raise ValueError
     except ValueError:
-        log.error(f'Could not find username or network in path: {path}')
-        print('null')
+        log.error(f"Could not find username or network in path: {path}")
+        print("null")
         sys.exit(1)
 
 
@@ -553,7 +586,7 @@ def sanitize_api_type(api_type):
         "Pinned": "Posts",
         "Archived": "Posts",
         "Message": "Messages",
-        "Highlights": "Stories"
+        "Highlights": "Stories",
     }
 
     if api_type not in api_types:
@@ -561,22 +594,17 @@ def sanitize_api_type(api_type):
             api_type = bad_types[api_type]
     return api_type
 
+
 def sanitize_string(string):
     """
     Parses and sanitizes strings to remove HTML tags
     """
     if string:
-        try:
-            import lxml as unused_lxml_
-
-            html_parser = "lxml"
-        except ImportError:
-            html_parser = "html.parser"
         string = unescape(string).replace("<br /> ", "\n")
         string = re.sub(r"<[^>]*>", "", string)
         return string
     return string
-            
+
 
 # MAIN #############################################################################################
 def main():
@@ -593,12 +621,14 @@ def main():
         lookup = lookup_gallery
         path = Path(get_gallery_path(scrape_id))
     else:
-        log.error('Invalid argument(s) provided: ' + str(sys.argv))
-        print('null')
+        log.error("Invalid argument(s) provided: " + str(sys.argv))
+        print("null")
         sys.exit()
 
     username, network, media_dir = get_path_info(path)
-    db = get_metadata_db(path, username, network)
+    if META_BASE_PATH:
+        meta_path = Path(META_BASE_PATH)
+    db = get_metadata_db(meta_path or path, username, network)
 
     media = lookup(path, db, media_dir, username, network)
     print(json.dumps(media))
